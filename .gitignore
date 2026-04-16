@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller 产物
+build/
+dist/
+*.spec
+
+# 运行时数据
+data/
+config/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 老的旧后端目录（已废弃，不再维护，不上传到 GitHub）
+backend/
+nfc-backend-worker/
+nfccloudflare/
+dist4.0/
+
+# 文件副本/备份
+*副本*
+*backup*
+*.bak

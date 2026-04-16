@@ -1,0 +1,11 @@
+# NFC 烧录工具 - Python 依赖
+# 已完全对接 Nurplay 后端（https://nurafamily.com）
+
+# GUI 框架
+PyQt6>=6.5.0
+
+# HTTP 客户端
+requests>=2.31.0
+
+# NFC 读卡器（ACR122U 等）
+pyscard>=2.0.7
