@@ -12,6 +12,7 @@ NFC 烧录工具打包脚本（跨平台）
     Linux:   dist/NFC烧录系统/NFC烧录系统
 """
 import argparse
+import io
 import json
 import os
 import platform
@@ -19,6 +20,17 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# 在 Windows 上强制 stdout/stderr 用 UTF-8，避免打印中文时报 UnicodeEncodeError
+# GitHub Actions 的 windows-latest 默认是 cp1252（不支持中文）
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        # Python < 3.7 fallback
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "NFC烧录系统"

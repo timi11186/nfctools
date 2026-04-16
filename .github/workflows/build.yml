@@ -50,6 +50,9 @@ jobs:
           pip install pyinstaller>=6.0
 
       - name: Build
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: python build_client.py --keep-config
 
       # macOS 产物压缩成 zip 方便上传
