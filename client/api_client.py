@@ -23,6 +23,8 @@ class APIClient:
     def __init__(self):
         self.token = None
         self.user_type = None
+        # 员工在工单列表选定的工单 ID（None 表示未选，沿用后端默认策略）
+        self.selected_order_id = None
         self.offline_data_path = Path('./data/offline_records.json')
         self.offline_data_path.parent.mkdir(exist_ok=True)
 
@@ -132,12 +134,38 @@ class APIClient:
             print(f"加载缓存任务失败: {str(e)}")
         return None
 
+    def list_available_orders(self) -> List[Dict]:
+        """列出本工厂所有 producing/pending 工单，供员工选择。"""
+        try:
+            response = requests.get(
+                self._url('/burning/orders'),
+                headers=self._get_headers(),
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('orders', []) if data.get('success') else []
+            elif response.status_code == 401:
+                print("未授权：请重新登录")
+            return []
+        except Exception as e:
+            print(f"获取工单列表失败: {e}")
+            return []
+
+    def set_selected_order(self, order_id: Optional[int]):
+        """设置当前员工选中的工单 ID。"""
+        self.selected_order_id = int(order_id) if order_id is not None else None
+
     def get_task_status(self) -> Optional[Dict]:
         """获取任务状态和卡片限制信息"""
         try:
+            params = {}
+            if self.selected_order_id:
+                params['order_id'] = self.selected_order_id
             response = requests.get(
                 self._url('/burning/task/status/'),
                 headers=self._get_headers(),
+                params=params or None,
                 timeout=10,
             )
             if response.status_code == 200:

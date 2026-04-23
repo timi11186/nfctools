@@ -21,7 +21,13 @@ from PyQt6.QtWidgets import (
     QMessageBox, QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
-from .nfc_reader import NFCReader
+
+try:
+    import smartcard.System
+    from smartcard.Exceptions import NoCardException, CardConnectionException
+    HAS_SMARTCARD = True
+except ImportError:
+    HAS_SMARTCARD = False
 
 
 CARD_TYPE_LABEL = {
@@ -134,15 +140,47 @@ class CardManagerWindow(QDialog):
         log_layout.addWidget(self.log_text)
         layout.addWidget(log_box)
 
-    # ---------- 自动读卡轮询（可选） ----------
+    # ---------- 直接读卡（不依赖 NFCReader 烧录线程） ----------
+
+    def _read_hardware_uid(self) -> str | None:
+        """直接通过 smartcard 库读一次卡片硬件 UID，不创建线程。"""
+        if not HAS_SMARTCARD:
+            return None
+        try:
+            readers = smartcard.System.readers()
+            if not readers:
+                return None
+            connection = readers[0].createConnection()
+            connection.connect()
+            # APDU: GET UID
+            response, sw1, sw2 = connection.transmit([0xFF, 0xCA, 0x00, 0x00, 0x00])
+            try:
+                connection.disconnect()
+            except Exception:
+                pass
+            if sw1 == 0x90:
+                return ''.join(f'{b:02X}' for b in response)
+            return None
+        except NoCardException:
+            return None
+        except CardConnectionException:
+            return None
+        except Exception as e:
+            print(f"[CardManager] 读卡异常: {e}")
+            return None
 
     def _start_auto_scan(self):
-        """短轮询读卡器是否有卡片放上，自动填入 UID。"""
+        """短轮询：如果用户把卡放上去且输入框为空，自动填入 UID"""
+        if not HAS_SMARTCARD:
+            self._log('⚠️ 未找到 smartcard 库，仅支持手动输入 UID')
+            return
+        # 先探测一下读卡器
         try:
-            self.reader = NFCReader()
-        except Exception:
-            self.reader = None
-            self._log('⚠️ 未检测到读卡器，仅支持手动输入 UID')
+            if not smartcard.System.readers():
+                self._log('⚠️ 未检测到读卡器，仅支持手动输入 UID')
+                return
+        except Exception as e:
+            self._log(f'⚠️ 读卡器检测失败: {e}')
             return
 
         self.scan_timer = QTimer(self)
@@ -150,34 +188,36 @@ class CardManagerWindow(QDialog):
         self.scan_timer.start(1500)
 
     def _poll_reader(self):
-        # 轻量级轮询：如果当前输入框为空，尝试读取一张卡的 UID 填入
-        if not self.reader or self.uid_input.text().strip():
+        """后台轻量轮询：输入框为空时自动读卡"""
+        if self.uid_input.text().strip():
             return
-        try:
-            nfc_id = self.reader.get_nfc_id()
-            if nfc_id:
-                self.uid_input.setText(nfc_id)
-                self._log(f'✓ 自动读取到硬件 UID: {nfc_id}')
-                self.handle_query()
-        except Exception:
-            pass
+        nfc_id = self._read_hardware_uid()
+        if nfc_id:
+            self.uid_input.setText(nfc_id)
+            self._log(f'✓ 自动读取到硬件 UID: {nfc_id}')
+            self.handle_query()
 
     # ---------- 核心操作 ----------
 
     def handle_read_nfc(self):
-        if not getattr(self, 'reader', None):
-            QMessageBox.warning(self, '无读卡器', '未检测到 NFC 读卡器，请使用手动输入。')
+        if not HAS_SMARTCARD:
+            QMessageBox.warning(self, '无读卡器', '未安装 smartcard 库，请使用手动输入。')
             return
         try:
-            nfc_id = self.reader.get_nfc_id()
-            if nfc_id:
-                self.uid_input.setText(nfc_id)
-                self._log(f'✓ 手动读取 UID: {nfc_id}')
-                self.handle_query()
-            else:
-                QMessageBox.warning(self, '未读到卡', '请把卡放到读卡器上再试。')
+            if not smartcard.System.readers():
+                QMessageBox.warning(self, '无读卡器', '未检测到 NFC 读卡器。')
+                return
         except Exception as e:
-            QMessageBox.critical(self, '读卡失败', str(e))
+            QMessageBox.critical(self, '读卡器错误', str(e))
+            return
+
+        nfc_id = self._read_hardware_uid()
+        if nfc_id:
+            self.uid_input.setText(nfc_id)
+            self._log(f'✓ 读取 UID: {nfc_id}')
+            self.handle_query()
+        else:
+            QMessageBox.warning(self, '未读到卡', '请把卡放到读卡器上再点「读卡」。')
 
     def handle_query(self):
         uid = self.uid_input.text().strip()

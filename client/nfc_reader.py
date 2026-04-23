@@ -62,31 +62,44 @@ class NFCReader(QThread):
         super().start()
         
     def stop(self):
+        print("[NFC_READER] 收到 stop() 调用")
         self.running = False
+        # 不阻塞 UI，线程会在 0.1-0.5 秒内自己退出
+        # 只有卡片未移开时可能延迟几秒，调用方（open_card_manager）会再 wait 一次
         
     def run(self):
+        print("[NFC_READER] 线程启动，进入主循环")
         self.running = True
+        loop_count = 0
         while self.running:
+            loop_count += 1
             try:
                 readers = smartcard.System.readers()
                 if not readers:
                     self.device_connected.emit(False)
                     self.status_changed.emit("未检测到读卡器")
-                    time.sleep(1)
+                    # 快速检测 stop 信号，避免阻塞
+                    for _ in range(10):
+                        if not self.running:
+                            print("[NFC_READER] 停止信号收到（无读卡器循环）")
+                            return
+                        time.sleep(0.1)
                     continue
-                    
+
                 reader = readers[0]
                 self.device_connected.emit(True)
-                
+
                 try:
                     connection = reader.createConnection()
-                    connection.connect()
-                    
+                    connection.connect()  # 没有卡时抛 NoCardException
+                    print(f"[NFC_READER] #{loop_count} 成功连接到卡 ATR={connection.getATR()}")
+
                     self.status_changed.emit("检测到NFC卡片，准备写入...")
                     time.sleep(0.2)
-                    
+
                     success = self.write_url_to_card(connection)
-                    
+                    print(f"[NFC_READER] #{loop_count} write_url_to_card returned {success}")
+
                     if not success:
                         self.retry_count += 1
                         if self.retry_count >= self.max_retries:
@@ -99,24 +112,43 @@ class NFCReader(QThread):
                     else:
                         self.retry_count = 0
                         time.sleep(0.5)
-                    
+
+                    # 等用户拿走卡（connection 失效即退出）
+                    wait_count = 0
                     while self.running:
+                        wait_count += 1
+                        if wait_count % 50 == 0:
+                            print(f"[NFC_READER] 等待卡片移开... ({wait_count*0.1:.0f}s)")
                         try:
                             connection.getATR()
                             time.sleep(0.1)
                         except:
+                            print("[NFC_READER] 卡片已移开")
                             break
-                            
+                    if not self.running:
+                        print("[NFC_READER] 等卡移开循环中收到停止信号")
+                        return
+
                 except NoCardException:
-                    self.status_changed.emit("等待放置NFC卡片...")
-                    time.sleep(0.1)
-                except CardConnectionException:
+                    # 没卡时是常态，不打 print 避免刷屏，但通过 status_changed 告诉 UI
+                    self.status_changed.emit("等待放置 NFC 卡片...")
+                    # 快速轮询 + 对 stop 信号响应
+                    for _ in range(5):
+                        if not self.running:
+                            print("[NFC_READER] 停止信号收到（等卡循环）")
+                            return
+                        time.sleep(0.1)
+                except CardConnectionException as e:
+                    print(f"[NFC_READER] CardConnectionException: {e}")
                     self.status_changed.emit("请重新放置卡片并保持稳定")
-                    time.sleep(0.5)
-                    
+                    time.sleep(0.3)
+
             except Exception as e:
+                import traceback
+                print(f"[NFC_READER] 外层异常: {e}\n{traceback.format_exc()}")
                 self.status_changed.emit(f"设备错误: {str(e)}")
                 time.sleep(1)
+        print("[NFC_READER] 主循环退出")
 
     def detect_card_type(self, connection) -> str:
         try:

@@ -47,9 +47,18 @@ class MainWindow(QMainWindow):
         self.device_status_label = QLabel("未连接")
         self.network_status_label = QLabel("网络状态: 检查中...")
         self.quota_label = QLabel("卡片配额: 未加载")
+        # 新增：下一张卡类型提示（大号字，醒目）
+        self.next_card_label = QLabel("请加载工单...")
+        self.next_card_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2196F3; padding: 4px;")
+        # 新增：配额分布摘要
+        self.summary_label = QLabel("")
+        self.summary_label.setStyleSheet("font-size: 12px; color: #666;")
+        self.summary_label.setWordWrap(True)
         status_layout.addWidget(self.device_status_label)
         status_layout.addWidget(self.network_status_label)
         status_layout.addWidget(self.quota_label)
+        status_layout.addWidget(self.next_card_label)
+        status_layout.addWidget(self.summary_label)
         status_group.setLayout(status_layout)
         
         # 操作区域
@@ -64,15 +73,23 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout()
         self.start_button = QPushButton("开始烧录")
         self.stop_button = QPushButton("停止烧录")
+        self.refresh_button = QPushButton("刷新状态")
         self.manage_button = QPushButton("卡片管理")
+        self.switch_order_button = QPushButton("切换工单")
+        self.refresh_button.setToolTip("从服务器重新拉取工单状态、配额、下一张卡类型")
         self.manage_button.setToolTip("查询/取消已烧录的卡片（用于烧错卡后重烧）")
+        self.switch_order_button.setToolTip("返回工单列表，选择其他工单")
         self.start_button.clicked.connect(self.start_burning)
         self.stop_button.clicked.connect(self.stop_burning)
+        self.refresh_button.clicked.connect(self.manual_refresh)
         self.manage_button.clicked.connect(self.open_card_manager)
+        self.switch_order_button.clicked.connect(self.switch_order)
         self.stop_button.setEnabled(False)
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.stop_button)
+        button_layout.addWidget(self.refresh_button)
         button_layout.addWidget(self.manage_button)
+        button_layout.addWidget(self.switch_order_button)
         
         operation_layout.addWidget(self.status_label)
         operation_layout.addLayout(button_layout)
@@ -141,20 +158,64 @@ class MainWindow(QMainWindow):
         self.nfc_reader.start()
         
     def stop_burning(self):
+        # 打印调用栈，看是谁触发的 stop_burning
+        import traceback
+        print("=" * 60)
+        print("[MAIN] stop_burning() 被调用，调用栈：")
+        traceback.print_stack()
+        print("=" * 60)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status_label.setText("已停止")
         self.nfc_reader.stop()
 
+    def manual_refresh(self):
+        """用户手动点"刷新状态"：重新拉取工单 + 配额 + 下一张卡类型。"""
+        self.set_status("正在刷新工单状态...")
+        try:
+            self.refresh_task_status()
+            # refresh_task_status 只在 has_limit 时才调 update_quota_display
+            # 如果当前没工单，load_task 会重新走完整加载流程
+            if not self.current_task or not self.current_task.get('has_task', True):
+                self.load_task()
+            self.set_status("工单状态已刷新")
+        except Exception as e:
+            self.set_status(f"刷新失败: {e}", is_error=True)
+
+    def switch_order(self):
+        """停止当前烧录并返回工单选择页面。"""
+        if self.nfc_reader and getattr(self.nfc_reader, 'running', False):
+            resp = QMessageBox.question(
+                self, '切换工单', '当前正在烧录，确定停止并返回工单列表吗？',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+            self.nfc_reader.stop()
+            if self.nfc_reader.isRunning():
+                self.nfc_reader.wait(3000)
+        cb = getattr(self, 'back_to_orders_requested', None)
+        if callable(cb):
+            cb()
+        else:
+            self.close()
+
     def open_card_manager(self):
         """打开卡片管理窗口（查询/取消已烧录卡片）"""
-        # 烧录中禁止打开管理窗口，避免读卡器冲突
-        if self.nfc_reader and getattr(self.nfc_reader, 'isRunning', lambda: False)():
+        # 检查烧录是否真正停止了
+        # 用 self.nfc_reader.running（我们自己维护的标志位）判断，而不是 QThread.isRunning()
+        # 因为 QThread 即便 stop() 调用后可能还需要 1-2 秒才完全退出
+        if self.nfc_reader and getattr(self.nfc_reader, 'running', False):
             QMessageBox.warning(
                 self, '请先停止烧录',
-                '烧录工作线程占用读卡器，请先点「停止烧录」再打开卡片管理。'
+                '请先点「停止烧录」按钮，再打开卡片管理。'
             )
             return
+
+        # 如果线程还在运行但标志位已关，强制等一下
+        if self.nfc_reader and self.nfc_reader.isRunning():
+            print("[MAIN] 等待烧录线程完全退出...")
+            self.nfc_reader.wait(3000)
 
         # 延迟 import 避免循环依赖
         from .card_manager_window import CardManagerWindow
@@ -361,26 +422,113 @@ class MainWindow(QMainWindow):
         else:
             self.quota_label.setText("卡片配额: 无限制")
             self.quota_label.setStyleSheet("")
+
+        # 更新"下一张卡"提示
+        if hasattr(self, 'current_task') and self.current_task:
+            self.update_next_card_hint(self.current_task)
+
+    def update_next_card_hint(self, task: dict):
+        """根据 task_status 更新下一张卡类型提示 + 配额摘要"""
+        CARD_LABEL = {
+            'content': '📀 内容卡',
+            'recording': '🎙️ 录音卡',
+            'family': '👨‍👩‍👧 家庭卡',
+        }
+        CARD_COLOR = {
+            'content': '#1976D2',    # 蓝色
+            'recording': '#388E3C',  # 绿色
+            'family': '#F57C00',     # 橙色
+        }
+
+        next_type = task.get('next_card_type') or task.get('card_type') or 'content'
+        next_group = task.get('next_group_id')
+        remaining = task.get('remaining', 0)
+
+        if remaining <= 0:
+            self.next_card_label.setText("✓ 工单已完成")
+            self.next_card_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #4CAF50; padding: 4px;")
+        else:
+            label_text = f"下一张: {CARD_LABEL.get(next_type, next_type)}"
+            if next_type == 'content' and next_group:
+                label_text += f"  (内容组: {next_group[:8]}...)"
+            self.next_card_label.setText(label_text)
+            color = CARD_COLOR.get(next_type, '#2196F3')
+            self.next_card_label.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {color}; padding: 4px;")
+
+        # 配额分布摘要：按 (card_type, group_id) 合并，避免被拆成 N 条单位为 1 的条目刷屏
+        summary = task.get('contents_summary') or []
+        if summary:
+            merged = {}  # key -> {card_type, group_id, quantity, burned}
+            order_keys = []
+            for item in summary:
+                ct = item.get('card_type', '?')
+                gid = item.get('group_id') if ct == 'content' else None
+                key = (ct, gid)
+                if key not in merged:
+                    merged[key] = {'card_type': ct, 'group_id': gid, 'quantity': 0, 'burned': 0}
+                    order_keys.append(key)
+                merged[key]['quantity'] += item.get('quantity', 0)
+                merged[key]['burned'] += item.get('burned', 0)
+
+            parts = []
+            for key in order_keys:
+                entry = merged[key]
+                ct = entry['card_type']
+                label = CARD_LABEL.get(ct, ct).replace('📀', '').replace('🎙️', '').replace('👨‍👩‍👧', '').strip()
+                # 多个不同内容组时在标签后加短 group id 区分
+                if ct == 'content' and entry['group_id']:
+                    same_type_count = sum(1 for k in merged if k[0] == 'content')
+                    if same_type_count > 1:
+                        label += f"({entry['group_id'][:6]})"
+                parts.append(f"{label} {entry['burned']}/{entry['quantity']}")
+            self.summary_label.setText("配额分布: " + " | ".join(parts))
+        else:
+            self.summary_label.setText("")
             
     def refresh_task_status(self):
         """刷新任务状态，检查限制"""
         try:
             task_status = self.api_client.get_task_status()
-            
-            if task_status and task_status.get("has_task", False) and task_status.get("has_limit", False):
-                max_cards = task_status.get("max_cards", 0)
-                burned_cards = task_status.get("burned_cards", 0)
-                remaining = task_status.get("remaining", 0)
-                
+            if not task_status or not task_status.get("has_task", False):
+                print("[REFRESH] 后端返回无工单")
+                return
+
+            current_id = self.current_task.get("id") if self.current_task else None
+            returned_id = task_status.get("id")
+            burned = task_status.get("burned_cards", 0)
+            remaining = task_status.get("remaining", 0)
+            next_type = task_status.get("next_card_type")
+            new_url = task_status.get("url", "")
+            old_url = self.nfc_reader.current_url or ""
+
+            print(f"[REFRESH] current_id={current_id}, returned_id={returned_id}, burned={burned}, remaining={remaining}, next={next_type}")
+            if new_url and new_url != old_url:
+                print(f"[REFRESH] URL 变化 {old_url} -> {new_url}，更新到 NFC reader")
+                self.nfc_reader.set_url(new_url)
+
+            if current_id and returned_id and current_id != returned_id:
+                print(f"[REFRESH] 工单 id 变化 {current_id}->{returned_id}，触发停止")
+                self.set_status(f"工单 #{current_id} 已完成。请点「停止烧录」→ 再点「开始烧录」领取下一个工单")
+                self.status_label.setStyleSheet("color: orange; font-weight: bold")
+                self.stop_burning()
+                return
+
+            if not task_status.get("has_limit", False):
                 self.current_task = task_status
-                
-                # 更新配额显示
-                self.update_quota_display(max_cards, burned_cards, remaining)
-                
-                if remaining <= 0:
-                    self.set_status(f"已达到烧录限制({burned_cards}/{max_cards})，请联系管理员")
-                    self.status_label.setStyleSheet("color: red; font-weight: bold")
-                    self.start_button.setEnabled(False)
-                    self.stop_burning()
+                return
+
+            max_cards = task_status.get("max_cards", 0)
+            burned_cards = task_status.get("burned_cards", 0)
+
+            self.current_task = task_status
+            self.update_quota_display(max_cards, burned_cards, remaining)
+
+            if remaining <= 0:
+                print(f"[REFRESH] 剩余为 0，触发停止")
+                self.set_status(f"工单 #{returned_id} 已完成（{burned_cards}/{max_cards}），烧录停止")
+                self.status_label.setStyleSheet("color: green; font-weight: bold")
+                self.stop_burning()
+            else:
+                print(f"[REFRESH] 继续烧录（剩余 {remaining}），下一张: {next_type}")
         except Exception as e:
             print(f"刷新任务状态失败: {e}") 

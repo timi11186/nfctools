@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt
 from pathlib import Path
 from .login import LoginWindow
 from .main_window import MainWindow
+from .order_select_window import OrderSelectWindow
 from .api_client import APIClient
 # 注意：admin_window 已随旧后端下线（功能迁移到 nurplay-admin Web 后台）
 # 保留 import 以便本地开发需要时临时启用
@@ -52,15 +53,29 @@ class NFCBurningApp:
                 print("无法创建失败提示音")
     
     def handle_login_success(self, token: str, user_type: str):
-        """处理登录成功事件
-
-        新后端（Nurplay）统一使用员工（factory_operator/factory_admin）流程，
-        管理员相关功能（建工单/员工/统计）已迁移到 nurplay-admin Web 后台，
-        客户端不再提供 AdminWindow。
-        """
+        """处理登录成功事件 → 展示工单列表，让员工选择后再进入烧录页面。"""
         self.api_client.set_auth(token, user_type)
+        self.order_select_window = OrderSelectWindow(self.api_client)
+        self.order_select_window.order_selected.connect(self.handle_order_selected)
+        self.order_select_window.show()
+
+    def handle_order_selected(self, order_id: int):
+        """员工在工单列表选中某个工单后进入烧录主界面。"""
         self.main_window = MainWindow(self.api_client)
+        # 给烧录页面一个"返回工单列表"的入口
+        self.main_window.back_to_orders_requested = self._show_order_select_again
         self.main_window.show()
+
+    def _show_order_select_again(self):
+        """烧录页面点"切换工单"时回到选单页面。"""
+        try:
+            self.main_window.close()
+        except Exception:
+            pass
+        self.api_client.set_selected_order(None)
+        self.order_select_window = OrderSelectWindow(self.api_client)
+        self.order_select_window.order_selected.connect(self.handle_order_selected)
+        self.order_select_window.show()
     
     def run(self):
         """运行应用程序"""

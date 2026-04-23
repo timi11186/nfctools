@@ -37,8 +37,8 @@ class LoginWindow(QWidget):
         password_layout.addWidget(password_label)
         password_layout.addWidget(self.password_input)
         
-        # 记住用户名选项
-        self.remember_checkbox = QCheckBox('记住用户名')
+        # 记住账号密码选项
+        self.remember_checkbox = QCheckBox('记住账号密码')
         
         # 登录按钮
         self.login_button = QPushButton('登录')
@@ -59,26 +59,30 @@ class LoginWindow(QWidget):
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     data = json.load(f)
-                    if data.get('remember_username'):
+                    # 兼容旧字段名 remember_username
+                    if data.get('remember_credentials') or data.get('remember_username'):
                         self.username_input.setText(data.get('username', ''))
+                        self.password_input.setText(data.get('password', ''))
                         self.remember_checkbox.setChecked(True)
         except Exception as e:
-            print(f"加载保存的用户名失败: {e}")
-            
+            print(f"加载保存的账号失败: {e}")
+
     def save_username(self):
         try:
             config_path = Path('./config/login.json')
             config_path.parent.mkdir(exist_ok=True)
-            
+
+            remember = self.remember_checkbox.isChecked()
             data = {
-                'remember_username': self.remember_checkbox.isChecked(),
-                'username': self.username_input.text() if self.remember_checkbox.isChecked() else ''
+                'remember_credentials': remember,
+                'username': self.username_input.text() if remember else '',
+                'password': self.password_input.text() if remember else '',
             }
-            
+
             with open(config_path, 'w') as f:
                 json.dump(data, f)
         except Exception as e:
-            print(f"保存用户名失败: {e}")
+            print(f"保存账号失败: {e}")
             
     def handle_login(self):
         username = self.username_input.text()
