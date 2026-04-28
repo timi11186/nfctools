@@ -286,16 +286,40 @@ class MainWindow(QMainWindow):
                 'nfc_id': nfc_id
             }
 
-            # 保存记录到服务器
+            # 保存记录到服务器（注意 create_burning_record 现在返回 dict 不是 bool）
+            api_result = None
             try:
-                response = self.api_client.create_burning_record(record_data)
-                if not response:
-                    self.status_label.setText("警告：记录保存失败")
+                api_result = self.api_client.create_burning_record(record_data)
             except Exception as e:
-                self.status_label.setText(f"警告：记录保存失败 - {str(e)}")
-                
-            # 如果烧录成功，更新本地配额显示
-            if success and "max_cards" in self.current_task and "burned_cards" in self.current_task:
+                api_result = {'ok': False, 'error': f'调用异常: {e}',
+                              'permanent': False, 'queued_offline': False,
+                              'queued_for_retry': False}
+
+            # 后端确认入库 = 真正的成功；物理写入但后端拒收时不能算 success
+            backend_ok = bool(api_result and api_result.get('ok'))
+            backend_err = (api_result or {}).get('error') or ''
+            backend_permanent = bool(api_result and api_result.get('permanent'))
+
+            effective_success = success and backend_ok
+
+            # 永久错误：物理卡已写但 DB 没记录 —— 弹明显警告，提示用户处理
+            if success and not backend_ok and backend_permanent:
+                QMessageBox.warning(
+                    self,
+                    "卡片已写但工单已满 / 不可入库",
+                    f"物理 NFC 已写入：{nfc_id}\n用户ID：{user_id}\n\n"
+                    f"但后端拒收：{backend_err}\n\n"
+                    f"⚠️ 这张物理卡处于不一致状态。\n"
+                    f"建议：\n"
+                    f"  • 报废该卡 或\n"
+                    f"  • 联系管理员重置工单 / 调整配额后通过『重烧』恢复",
+                )
+            elif success and not backend_ok and not backend_permanent:
+                # 临时错误：已经放入离线队列，下次会重试
+                self.status_label.setText(f"警告：记录暂存离线（{backend_err}），将在下次重试")
+
+            # 如果真正成功，更新本地配额显示
+            if effective_success and "max_cards" in self.current_task and "burned_cards" in self.current_task:
                 max_cards = self.current_task.get("max_cards", 0)
                 if max_cards > 0:
                     # 先更新本地计数，确保即时反馈
@@ -304,24 +328,29 @@ class MainWindow(QMainWindow):
                     self.current_task["burned_cards"] = burned_cards
                     self.current_task["remaining"] = remaining
                     self.update_quota_display(max_cards, burned_cards, remaining)
-                
-            # 如果烧录成功，刷新任务状态以获取最新的限制信息
-            if success:
-                # 延迟一秒再刷新，确保服务器已处理
+
+            # 真正成功才刷新任务状态
+            if effective_success:
                 QTimer.singleShot(1000, self.refresh_task_status)
-                
+
             # 更新界面显示
-            if success:
+            if effective_success:
                 self.success_count += 1
                 self.success_lcd.display(self.success_count)
                 self.success_sound.play()
                 status_text = f"烧录成功，用户ID: {user_id}" if user_id else "烧录成功，请移除卡片"
                 self.status_label.setText(status_text)
             else:
+                # 物理失败 或 后端拒收 都算失败
                 self.fail_count += 1
                 self.fail_lcd.display(self.fail_count)
                 self.fail_sound.play()
-                self.status_label.setText("烧录失败，请移除卡片后重试")
+                if not success:
+                    self.status_label.setText("烧录失败，请移除卡片后重试")
+                elif backend_permanent:
+                    self.status_label.setText(f"卡已写但工单不收：{backend_err}")
+                else:
+                    self.status_label.setText(f"已暂存离线：{backend_err}")
 
         except Exception as e:
             self.status_label.setText(f"错误：{str(e)}")

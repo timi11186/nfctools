@@ -73,6 +73,12 @@ class APIClient:
             return False
 
     def sync_offline_records(self) -> bool:
+        """
+        同步离线队列。逐条检查后端 per-record 状态：
+          - status=ok        → 删除该条
+          - 永久错误         → 删除该条 + 写入 ./data/permanent_failures.json 留档报警
+          - 临时错误 / 网络异常 → 保留在 offline 队列继续重试
+        """
         if not self.offline_data_path.exists():
             return True
 
@@ -90,10 +96,65 @@ class APIClient:
                 timeout=15,
             )
 
-            if response.status_code == 200:
+            if response.status_code != 200:
+                # 整体失败，整批保留下次重试
+                return False
+
+            try:
+                results = response.json()
+                if isinstance(results, dict):
+                    results = results.get('results', [])
+            except Exception:
+                # 旧后端不返 JSON：按全成功处理（保留旧行为）
                 self.offline_data_path.unlink()
                 return True
-            return False
+
+            # 把响应按 nfc_id 索引一下，便于映射回原 record
+            index = {}
+            if isinstance(results, list):
+                for r in results:
+                    if isinstance(r, dict) and r.get('nfc_id'):
+                        index[r.get('nfc_id')] = r
+
+            remaining = []
+            permanent_failures = []
+            ok_count = 0
+            for rec in offline_records:
+                nfc_id = rec.get('nfc_id')
+                resp = index.get(nfc_id)
+                if not resp or resp.get('status') == 'ok':
+                    ok_count += 1
+                    continue
+                err_msg = resp.get('msg') or resp.get('message') or '未知错误'
+                if self._is_permanent_error(err_msg):
+                    permanent_failures.append({**rec, 'reason': err_msg})
+                    print(f"[sync_offline_records] 永久失败丢弃 nfc_id={nfc_id} msg={err_msg}")
+                else:
+                    remaining.append(rec)
+
+            # 保留临时失败的继续等下次重试
+            if remaining:
+                with open(self.offline_data_path, 'w') as f:
+                    json.dump(remaining, f)
+            else:
+                self.offline_data_path.unlink()
+
+            # 永久失败留档供运维查看
+            if permanent_failures:
+                try:
+                    perm_path = self.offline_data_path.parent / 'permanent_failures.json'
+                    existing = []
+                    if perm_path.exists():
+                        with open(perm_path, 'r') as f:
+                            existing = json.load(f)
+                    existing.extend(permanent_failures)
+                    with open(perm_path, 'w') as f:
+                        json.dump(existing, f)
+                except Exception as e:
+                    print(f"保存永久失败记录出错: {e}")
+
+            print(f"[sync_offline_records] ok={ok_count} retry={len(remaining)} dropped={len(permanent_failures)}")
+            return len(remaining) == 0
 
         except Exception as e:
             print(f"同步离线数据失败: {e}")
@@ -177,8 +238,39 @@ class APIClient:
             print(f"获取任务状态失败: {e}")
             return None
 
-    def create_burning_record(self, record_data: dict) -> bool:
-        """上报单条烧录记录"""
+    # 后端拒绝消息里命中以下关键词视为"永久错误" —— 即便重试也不可能成功
+    # （工单已 completed / 配额满 / 员工没分配到这个工单 / 工单不存在）
+    # 这种情况下离线重试只会让脏数据越积越多，应直接告警让用户处理（重置工单 / 报废卡）。
+    _PERMANENT_ERROR_KEYWORDS = (
+        'quota exhausted',
+        'order not found',
+        'not assigned',
+        'completed',
+        'cancelled',
+    )
+
+    @classmethod
+    def _is_permanent_error(cls, msg: str) -> bool:
+        if not msg:
+            return False
+        low = msg.lower()
+        return any(k in low for k in cls._PERMANENT_ERROR_KEYWORDS)
+
+    def create_burning_record(self, record_data: dict) -> Dict:
+        """
+        上报单条烧录记录。
+
+        返回 dict（过去返回 bool —— 当时只看 HTTP 200 就当成功，导致后端
+        per-record 'status:error' 被忽略；现在改成统一返回带详细信息的字典）：
+          {'ok': True}                                        ✅ 后端确认入库
+          {'ok': False, 'error': msg, 'permanent': bool,
+           'queued_offline': bool, 'queued_for_retry': bool}  ❌ 失败/拒收
+
+        约定：
+          - 非永久错误（网络异常、HTTP 非 200/401、500 等）→ 进 offline 队列下次重试
+          - 永久错误（quota / order completed / not assigned）→ 不进 offline，
+            UI 应弹明显警告：物理卡已写但 DB 没记录，要么重置工单要么报废这张卡
+        """
         try:
             response = requests.post(
                 self._url('/burning/sync'),
@@ -186,17 +278,53 @@ class APIClient:
                 json=[record_data],  # 服务端接受数组
                 timeout=15,
             )
-            if response.status_code == 200:
-                return True
-            elif response.status_code == 401:
-                print("未授权创建记录，转为离线模式")
-                return self._handle_offline_mode(record_data)
-            else:
-                print(f"创建记录失败: {response.status_code} {response.text}")
-                return self._handle_offline_mode(record_data)
         except Exception as e:
+            msg = f"网络异常：{e}"
             print(f"创建记录异常: {e}")
-            return self._handle_offline_mode(record_data)
+            queued = self._handle_offline_mode(record_data)
+            return {'ok': False, 'error': msg, 'permanent': False,
+                    'queued_offline': queued, 'queued_for_retry': True}
+
+        if response.status_code == 401:
+            print("未授权创建记录，转为离线模式")
+            queued = self._handle_offline_mode(record_data)
+            return {'ok': False, 'error': '未授权（请重新登录）', 'permanent': False,
+                    'queued_offline': queued, 'queued_for_retry': True}
+
+        if response.status_code != 200:
+            print(f"创建记录失败: {response.status_code} {response.text}")
+            queued = self._handle_offline_mode(record_data)
+            return {'ok': False, 'error': f"HTTP {response.status_code}",
+                    'permanent': False,
+                    'queued_offline': queued, 'queued_for_retry': True}
+
+        # 200 OK —— 还要看 per-record 的 status，关键 bug 修复点
+        try:
+            results = response.json()
+            if isinstance(results, dict):
+                # 兼容 {results: [...]}
+                results = results.get('results', [])
+        except Exception:
+            # 旧后端可能不返 JSON 数组，回退保留原行为
+            return {'ok': True}
+
+        if not isinstance(results, list) or len(results) == 0:
+            return {'ok': True}
+
+        # 我们一次只发一条，所以只看第一个结果
+        rec = results[0] if isinstance(results[0], dict) else {}
+        rec_status = rec.get('status')
+
+        if rec_status == 'ok':
+            return {'ok': True}
+
+        # status='error' 或其他非 ok 状态
+        err_msg = rec.get('msg') or rec.get('message') or '后端拒收'
+        permanent = self._is_permanent_error(err_msg)
+        queued = False if permanent else self._handle_offline_mode(record_data)
+        print(f"[create_burning_record] 后端拒收 (permanent={permanent}): {err_msg}")
+        return {'ok': False, 'error': err_msg, 'permanent': permanent,
+                'queued_offline': queued, 'queued_for_retry': not permanent}
 
     # ---------- 卡片管理（查询 / 取消烧录 / 重烧） ----------
 
