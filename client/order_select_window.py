@@ -2,10 +2,60 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QAbstractItemView,
-    QApplication,
+    QApplication, QFrame, QGroupBox, QFormLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .api_client import APIClient
+
+try:
+    import smartcard.System
+    from smartcard.Exceptions import NoCardException, CardConnectionException
+    HAS_SMARTCARD = True
+except ImportError:
+    HAS_SMARTCARD = False
+
+
+CARD_TYPE_LABEL_FULL = {
+    'content': '📀 内容卡',
+    'recording': '🎙️ 录音卡',
+    'family': '👨‍👩‍👧 家庭卡',
+}
+
+STATUS_LABEL = {
+    'active': '✅ active',
+    'disabled': '⛔ disabled',
+    'blacklisted': '🚫 blacklisted',
+}
+
+
+def _read_hardware_uid() -> str | None:
+    """直接通过 smartcard APDU 读一次卡片硬件 UID（不依赖 NFCReader 烧录线程）。
+
+    与 card_manager_window._read_hardware_uid 同款实现，方便复用。
+    返回大写 hex 字符串，未读到 / 出错返 None。
+    """
+    if not HAS_SMARTCARD:
+        return None
+    try:
+        readers = smartcard.System.readers()
+        if not readers:
+            return None
+        connection = readers[0].createConnection()
+        connection.connect()
+        # APDU: GET UID  FF CA 00 00 00
+        response, sw1, _sw2 = connection.transmit([0xFF, 0xCA, 0x00, 0x00, 0x00])
+        try:
+            connection.disconnect()
+        except Exception:
+            pass
+        if sw1 == 0x90:
+            return ''.join(f'{b:02X}' for b in response)
+        return None
+    except (NoCardException, CardConnectionException):
+        return None
+    except Exception as e:
+        print(f"[OrderSelect] 读卡异常: {e}")
+        return None
 
 
 class _OrderListFetcher(QThread):
@@ -108,6 +158,40 @@ class OrderSelectWindow(QWidget):
         btn_row.addWidget(self.confirm_btn)
         layout.addLayout(btn_row)
 
+        # 分隔线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sep.setStyleSheet("color: #ddd; margin: 8px 0;")
+        layout.addWidget(sep)
+
+        # 卡片检测区
+        check_box = QGroupBox("🔍 卡片检测（核对手上的卡是否真的是后端记录的那一张）")
+        check_box.setStyleSheet("QGroupBox { font-weight: bold; padding-top: 14px; }")
+        check_layout = QVBoxLayout(check_box)
+
+        check_btn_row = QHBoxLayout()
+        self.check_card_btn = QPushButton("📡 检测卡片")
+        self.check_card_btn.setStyleSheet("padding: 6px 18px;")
+        self.check_card_btn.clicked.connect(self._on_check_card)
+        check_btn_row.addWidget(self.check_card_btn)
+        check_btn_row.addStretch()
+        check_layout.addLayout(check_btn_row)
+
+        self.check_result_label = QLabel("把卡放到读卡器上，点上面「检测卡片」按钮。")
+        self.check_result_label.setStyleSheet(
+            "color: #555; padding: 6px; background: #f8f8f8; border-radius: 4px;"
+        )
+        self.check_result_label.setWordWrap(True)
+        self.check_result_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        check_layout.addWidget(self.check_result_label)
+
+        if not HAS_SMARTCARD:
+            self.check_card_btn.setEnabled(False)
+            self.check_result_label.setText("⚠️ 未安装 smartcard 库，本机无法检测卡片。")
+
+        layout.addWidget(check_box)
+
     def _tick_spinner(self):
         """驱动刷新按钮的加载动画。"""
         self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
@@ -207,3 +291,91 @@ class OrderSelectWindow(QWidget):
         self.api_client.set_selected_order(oid)
         self.order_selected.emit(int(oid))
         self.close()
+
+    # ---------- 卡片检测 ----------
+
+    def _on_check_card(self):
+        """读硬件 UID + 调后端 query_nfc_card，把后端记录的卡片信息显示给员工核对。
+
+        典型用途：员工手上的卡跟"系统认为他要烧的那张"对不对得上——
+        刷一下，看 UID + type + status + group_id 是不是预期的。
+        """
+        if not HAS_SMARTCARD:
+            QMessageBox.warning(self, '无读卡器', '本机未安装 smartcard 库，无法检测。')
+            return
+
+        # 1. 读硬件 UID
+        try:
+            if not smartcard.System.readers():
+                self.check_result_label.setText("⚠️ 未检测到读卡器，请检查 USB 连接。")
+                return
+        except Exception as e:
+            self.check_result_label.setText(f"⚠️ 读卡器异常：{e}")
+            return
+
+        self.check_card_btn.setEnabled(False)
+        self.check_card_btn.setText("📡 读卡中...")
+        QApplication.processEvents()
+
+        try:
+            uid = _read_hardware_uid()
+            if not uid:
+                self.check_result_label.setText("⚠️ 没读到卡。请把卡稳定放在读卡器上再点一次。")
+                return
+
+            # 2. 后端查询
+            try:
+                info = self.api_client.query_nfc_card(uid)
+            except Exception as e:
+                self.check_result_label.setText(
+                    f"📛 UID = {uid}\n查询后端失败：{e}"
+                )
+                return
+
+            # 3. 渲染结果
+            if not info or not info.get('found'):
+                self.check_result_label.setText(
+                    f"📛 UID = {uid}\n后端无此卡记录（这张卡还没烧过 / 工厂没烧成功 / 已被删）。"
+                )
+                return
+
+            ct = info.get('type') or '?'
+            ct_label = CARD_TYPE_LABEL_FULL.get(ct, ct)
+            status = info.get('status') or '?'
+            status_label = STATUS_LABEL.get(status, status)
+            group_id = info.get('group_id')
+            create_time = info.get('create_time') or ''
+            activated = info.get('activated_time') or '尚未激活'
+
+            lines = [
+                f"📇 UID:        {uid}",
+                f"📂 卡片类型:    {ct_label}",
+                f"💡 状态:        {status_label}",
+            ]
+            if ct == 'content':
+                lines.append(f"🎵 内容组:      {group_id or '(未绑定)'}")
+            lines.append(f"🏭 烧录时间:    {create_time}")
+            lines.append(f"⚡ 首次激活:    {activated}")
+
+            # 跟当前选中的工单做"是否匹配"提示（仅 content 卡有 group_id 比较意义）
+            cur_oid = self._current_order_id()
+            chosen = next((o for o in self.orders if o.get('id') == cur_oid), None)
+            if chosen and ct == 'content' and group_id:
+                # 看选中的工单 contents_summary 里有没有这个 group_id
+                summary = chosen.get('contents_summary') or []
+                expected_groups = {
+                    s.get('group_id') for s in summary
+                    if s.get('card_type') == 'content' and s.get('group_id')
+                }
+                if expected_groups and group_id in expected_groups:
+                    lines.append(f"\n✅ 该卡匹配当前选中工单 #{cur_oid}")
+                elif expected_groups:
+                    lines.append(
+                        f"\n⚠️ 该卡的 group_id 不在工单 #{cur_oid} 的配额里："
+                        f"工单要求 {sorted(expected_groups)[:3]}..."
+                    )
+
+            self.check_result_label.setText("\n".join(lines))
+        finally:
+            self.check_card_btn.setEnabled(True)
+            self.check_card_btn.setText("📡 检测卡片")
