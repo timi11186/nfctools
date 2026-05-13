@@ -58,6 +58,13 @@ class NFCReader(QThread):
         self.current_url = url
         
     def start(self):
+        # 防御：若上次 stop 后线程还没真正退出（QThread.isRunning()=True），
+        # 这里 super().start() 会被 Qt 当成 no-op + 抛 warning，导致用户以为已启动其实没启。
+        # 等旧线程跑完 run() 再重新启。最坏等 2s。
+        if self.isRunning():
+            print("[NFC_READER] start() 检测到旧线程未结束，等它退出...")
+            self.running = False
+            self.wait(2000)
         self.running = True
         super().start()
         

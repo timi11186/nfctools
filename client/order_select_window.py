@@ -82,16 +82,25 @@ CARD_LABEL = {
 }
 
 
+ROLE_LABEL = {
+    'mama': '妈妈',
+    'papa': '爸爸',
+    'child': '孩子',
+}
+
+
 def _merge_summary(summary):
-    """把 contents_summary 按 (card_type, group_id) 合并，避免每条都显示成 1/1。"""
+    """把 contents_summary 按 (card_type, group_id, preset_role) 合并，避免每条都显示成 1/1。
+    v9.5：家庭卡按 preset_role 分桶，让"100 张爸爸 + 100 张妈妈"分两段显示。"""
     merged = {}
     order_keys = []
     for item in summary or []:
         ct = item.get('card_type', '?')
         gid = item.get('group_id') if ct == 'content' else None
-        key = (ct, gid)
+        role = item.get('preset_role') if ct == 'family' else None
+        key = (ct, gid, role)
         if key not in merged:
-            merged[key] = {'card_type': ct, 'group_id': gid, 'quantity': 0, 'burned': 0}
+            merged[key] = {'card_type': ct, 'group_id': gid, 'preset_role': role, 'quantity': 0, 'burned': 0}
             order_keys.append(key)
         merged[key]['quantity'] += item.get('quantity', 0)
         merged[key]['burned'] += item.get('burned', 0)
@@ -106,6 +115,8 @@ def _merge_summary(summary):
         plain = label.split(' ', 1)[-1] if ' ' in label else label
         if ct == 'content' and e['group_id'] and content_groups > 1:
             plain += f"({e['group_id'][:6]})"
+        if ct == 'family' and e['preset_role']:
+            plain += f"·{ROLE_LABEL.get(e['preset_role'], e['preset_role'])}"
         parts.append(f"{plain} {e['burned']}/{e['quantity']}")
     return " | ".join(parts) if parts else "(无内容)"
 
@@ -344,6 +355,7 @@ class OrderSelectWindow(QWidget):
             status = info.get('status') or '?'
             status_label = STATUS_LABEL.get(status, status)
             group_id = info.get('group_id')
+            preset_role = info.get('preset_role')
             create_time = info.get('create_time') or ''
             activated = info.get('activated_time') or '尚未激活'
 
@@ -354,6 +366,12 @@ class OrderSelectWindow(QWidget):
             ]
             if ct == 'content':
                 lines.append(f"🎵 内容组:      {group_id or '(未绑定)'}")
+            elif ct == 'family':
+                # v9.5：家庭卡显示预设角色
+                if preset_role:
+                    lines.append(f"👪 预设角色:    {ROLE_LABEL.get(preset_role, preset_role)} ({preset_role})")
+                else:
+                    lines.append(f"👪 预设角色:    未预设（App 端扫到时让用户选）")
             lines.append(f"🏭 烧录时间:    {create_time}")
             lines.append(f"⚡ 首次激活:    {activated}")
 

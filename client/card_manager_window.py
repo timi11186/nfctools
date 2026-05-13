@@ -42,6 +42,13 @@ STATUS_LABEL = {
     'blacklisted': '黑名单',
 }
 
+# v9.5：家庭卡预设角色
+ROLE_LABEL = {
+    'mama': '👩 妈妈',
+    'papa': '👨 爸爸',
+    'child': '🧒 孩子',
+}
+
 
 class CardManagerWindow(QDialog):
     def __init__(self, api_client, current_order_id=None, parent=None):
@@ -96,12 +103,13 @@ class CardManagerWindow(QDialog):
         self.lbl_logic_uid = QLabel('-')
         self.lbl_type = QLabel('-')
         self.lbl_group = QLabel('-')
+        self.lbl_role = QLabel('-')        # v9.5: 家庭卡预设角色
         self.lbl_status = QLabel('-')
         self.lbl_created = QLabel('-')
         self.lbl_activated = QLabel('-')
 
         for lbl in [self.lbl_found, self.lbl_uid, self.lbl_logic_uid, self.lbl_type,
-                    self.lbl_group, self.lbl_status, self.lbl_created, self.lbl_activated]:
+                    self.lbl_group, self.lbl_role, self.lbl_status, self.lbl_created, self.lbl_activated]:
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         info_layout.addRow('状态：', self.lbl_found)
@@ -109,6 +117,7 @@ class CardManagerWindow(QDialog):
         info_layout.addRow('Logic UID：', self.lbl_logic_uid)
         info_layout.addRow('卡片类型：', self.lbl_type)
         info_layout.addRow('内容组：', self.lbl_group)
+        info_layout.addRow('预设角色：', self.lbl_role)
         info_layout.addRow('卡片状态：', self.lbl_status)
         info_layout.addRow('创建时间：', self.lbl_created)
         info_layout.addRow('首次使用：', self.lbl_activated)
@@ -263,6 +272,18 @@ class CardManagerWindow(QDialog):
         card_type = data.get('type', '-')
         self.lbl_type.setText(f"{CARD_TYPE_LABEL.get(card_type, card_type)} ({card_type})")
         self.lbl_group.setText(data.get('group_id') or '（无）')
+        # v9.5：家庭卡才显示预设角色，其它类型显示 "—"
+        preset_role = data.get('preset_role')
+        if card_type == 'family':
+            if preset_role:
+                self.lbl_role.setText(f"{ROLE_LABEL.get(preset_role, preset_role)} ({preset_role})")
+                self.lbl_role.setStyleSheet('color: #F57C00; font-weight: bold;')
+            else:
+                self.lbl_role.setText('未预设（App 端扫到时让用户选）')
+                self.lbl_role.setStyleSheet('color: #999;')
+        else:
+            self.lbl_role.setText('—（非家庭卡）')
+            self.lbl_role.setStyleSheet('color: #ccc;')
         status = data.get('status', '-')
         self.lbl_status.setText(f"{STATUS_LABEL.get(status, status)} ({status})")
         self.lbl_created.setText(data.get('create_time') or '-')
@@ -318,6 +339,8 @@ class CardManagerWindow(QDialog):
         self.lbl_logic_uid.setText('-')
         self.lbl_type.setText('-')
         self.lbl_group.setText('-')
+        self.lbl_role.setText('-')
+        self.lbl_role.setStyleSheet('')
         self.lbl_status.setText('-')
         self.lbl_created.setText('-')
         self.lbl_activated.setText('-')

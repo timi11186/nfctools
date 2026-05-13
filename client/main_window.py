@@ -360,7 +360,12 @@ class MainWindow(QMainWindow):
         if connected:
             self.device_status_label.setText("读卡器已连接")
             self.device_status_label.setStyleSheet("color: green")
-            self.start_button.setEnabled(True)
+            # 正在烧录时不要把开始按钮重新启用——否则用户烧完一张后
+            # 看到「开始烧录」又亮了会以为没在跑（实际 nfc_reader 还在）
+            if not getattr(self.nfc_reader, 'running', False):
+                self.start_button.setEnabled(True)
+            # stop 按钮则跟随实际烧录状态
+            self.stop_button.setEnabled(getattr(self.nfc_reader, 'running', False))
         else:
             self.device_status_label.setText("读卡器未连接")
             self.device_status_label.setStyleSheet("color: red")
@@ -468,9 +473,16 @@ class MainWindow(QMainWindow):
             'recording': '#388E3C',  # 绿色
             'family': '#F57C00',     # 橙色
         }
+        # v9.5：家庭卡预设角色中文标签
+        ROLE_LABEL = {
+            'mama': '妈妈',
+            'papa': '爸爸',
+            'child': '孩子',
+        }
 
         next_type = task.get('next_card_type') or task.get('card_type') or 'content'
         next_group = task.get('next_group_id')
+        next_role = task.get('next_preset_role')
         remaining = task.get('remaining', 0)
 
         if remaining <= 0:
@@ -480,21 +492,28 @@ class MainWindow(QMainWindow):
             label_text = f"下一张: {CARD_LABEL.get(next_type, next_type)}"
             if next_type == 'content' and next_group:
                 label_text += f"  (内容组: {next_group[:8]}...)"
+            elif next_type == 'family':
+                if next_role:
+                    label_text += f"  · {ROLE_LABEL.get(next_role, next_role)}卡"
+                else:
+                    label_text += "  · 未指定角色"
             self.next_card_label.setText(label_text)
             color = CARD_COLOR.get(next_type, '#2196F3')
             self.next_card_label.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {color}; padding: 4px;")
 
-        # 配额分布摘要：按 (card_type, group_id) 合并，避免被拆成 N 条单位为 1 的条目刷屏
+        # 配额分布摘要：按 (card_type, group_id, preset_role) 合并
+        # 这样同一工单里的"爸爸卡 100 张 / 妈妈卡 100 张"会分开展示
         summary = task.get('contents_summary') or []
         if summary:
-            merged = {}  # key -> {card_type, group_id, quantity, burned}
+            merged = {}  # key -> {card_type, group_id, preset_role, quantity, burned}
             order_keys = []
             for item in summary:
                 ct = item.get('card_type', '?')
                 gid = item.get('group_id') if ct == 'content' else None
-                key = (ct, gid)
+                role = item.get('preset_role') if ct == 'family' else None
+                key = (ct, gid, role)
                 if key not in merged:
-                    merged[key] = {'card_type': ct, 'group_id': gid, 'quantity': 0, 'burned': 0}
+                    merged[key] = {'card_type': ct, 'group_id': gid, 'preset_role': role, 'quantity': 0, 'burned': 0}
                     order_keys.append(key)
                 merged[key]['quantity'] += item.get('quantity', 0)
                 merged[key]['burned'] += item.get('burned', 0)
@@ -504,11 +523,14 @@ class MainWindow(QMainWindow):
                 entry = merged[key]
                 ct = entry['card_type']
                 label = CARD_LABEL.get(ct, ct).replace('📀', '').replace('🎙️', '').replace('👨‍👩‍👧', '').strip()
-                # 多个不同内容组时在标签后加短 group id 区分
+                # 内容卡多个内容组：加短 group id 区分
                 if ct == 'content' and entry['group_id']:
                     same_type_count = sum(1 for k in merged if k[0] == 'content')
                     if same_type_count > 1:
                         label += f"({entry['group_id'][:6]})"
+                # 家庭卡：带角色后缀
+                if ct == 'family' and entry['preset_role']:
+                    label += f"·{ROLE_LABEL.get(entry['preset_role'], entry['preset_role'])}"
                 parts.append(f"{label} {entry['burned']}/{entry['quantity']}")
             self.summary_label.setText("配额分布: " + " | ".join(parts))
         else:
