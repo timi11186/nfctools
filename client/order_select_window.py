@@ -2,10 +2,13 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QAbstractItemView,
-    QApplication, QFrame, QGroupBox, QFormLayout,
+    QApplication, QFrame, QGroupBox, QFormLayout, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from .api_client import APIClient
+from .qr_export import render_card_qr, qr_available
 
 try:
     import smartcard.System
@@ -130,6 +133,8 @@ class OrderSelectWindow(QWidget):
         self.api_client = api_client
         self.orders = []
         self._fetcher = None
+        self._current_qr_pixmap = None   # 当前卡二维码（全分辨率，内存，不落盘）
+        self._current_qr_uid = None
         # 刷新动画用的小图标（旋转的省略号），文字是 "刷新中 ."/".."/"..."
         self._spinner_frames = ["刷新中 .  ", "刷新中 .. ", "刷新中 ..."]
         self._spinner_idx = 0
@@ -142,7 +147,9 @@ class OrderSelectWindow(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("NFC 烧录系统 - 选择工单")
-        self.resize(720, 480)
+        # 卡片检测区加了二维码后内容变高，窗口相应加高
+        self.resize(720, 720)
+        self.setMinimumSize(620, 640)
         layout = QVBoxLayout(self)
 
         header = QLabel("请选择要烧录的工单")
@@ -196,6 +203,27 @@ class OrderSelectWindow(QWidget):
         self.check_result_label.setWordWrap(True)
         self.check_result_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         check_layout.addWidget(self.check_result_label)
+
+        # 认领二维码：检测到卡片后显示，可另存 / 打印
+        qr_row = QHBoxLayout()
+        self.qr_label = QLabel("检测到卡片后显示二维码")
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setMinimumSize(170, 170)
+        self.qr_label.setStyleSheet("color: #999; background: #f8f8f8; border-radius: 4px;")
+        qr_row.addWidget(self.qr_label)
+
+        qr_btn_col = QVBoxLayout()
+        self.btn_qr_save = QPushButton("另存为图片…")
+        self.btn_qr_save.clicked.connect(self.handle_qr_save)
+        self.btn_qr_save.setEnabled(False)
+        self.btn_qr_print = QPushButton("打印二维码")
+        self.btn_qr_print.clicked.connect(self.handle_qr_print)
+        self.btn_qr_print.setEnabled(False)
+        qr_btn_col.addWidget(self.btn_qr_save)
+        qr_btn_col.addWidget(self.btn_qr_print)
+        qr_btn_col.addStretch()
+        qr_row.addLayout(qr_btn_col)
+        check_layout.addLayout(qr_row)
 
         if not HAS_SMARTCARD:
             self.check_card_btn.setEnabled(False)
@@ -315,6 +343,9 @@ class OrderSelectWindow(QWidget):
             QMessageBox.warning(self, '无读卡器', '本机未安装 smartcard 库，无法检测。')
             return
 
+        # 每次检测先清掉上一次的二维码，成功路径再重新显示
+        self._clear_qr()
+
         # 1. 读硬件 UID
         try:
             if not smartcard.System.readers():
@@ -394,6 +425,93 @@ class OrderSelectWindow(QWidget):
                     )
 
             self.check_result_label.setText("\n".join(lines))
+            self._show_qr(uid)
         finally:
             self.check_card_btn.setEnabled(True)
             self.check_card_btn.setText("📡 检测卡片")
+
+    # ---------- 认领二维码 ----------
+
+    def _show_qr(self, uid: str):
+        """生成并显示该卡的认领二维码（内存渲染，不落盘）。"""
+        if not uid:
+            self._clear_qr()
+            return
+        if not qr_available():
+            self._current_qr_pixmap = None
+            self._current_qr_uid = None
+            self.btn_qr_save.setEnabled(False)
+            self.btn_qr_print.setEnabled(False)
+            self.qr_label.clear()
+            self.qr_label.setText("未安装 qrcode 依赖")
+            return
+        data = render_card_qr(uid)
+        if data:
+            pix = QPixmap()
+            if pix.loadFromData(data, 'PNG') and not pix.isNull():
+                self._current_qr_pixmap = pix
+                self._current_qr_uid = uid
+                self.qr_label.setText("")
+                self.qr_label.setPixmap(pix.scaled(
+                    160, 160,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+                self.btn_qr_save.setEnabled(True)
+                self.btn_qr_print.setEnabled(True)
+                return
+        self._current_qr_pixmap = None
+        self._current_qr_uid = None
+        self.btn_qr_save.setEnabled(False)
+        self.btn_qr_print.setEnabled(False)
+        self.qr_label.clear()
+        self.qr_label.setText("二维码生成失败")
+
+    def _clear_qr(self):
+        self._current_qr_pixmap = None
+        self._current_qr_uid = None
+        self.qr_label.clear()
+        self.qr_label.setText("检测到卡片后显示二维码")
+        self.qr_label.setStyleSheet("color: #999; background: #f8f8f8; border-radius: 4px;")
+        self.btn_qr_save.setEnabled(False)
+        self.btn_qr_print.setEnabled(False)
+
+    def handle_qr_save(self):
+        """把当前二维码另存到用户选定位置（此处才真正写文件）。"""
+        if not self._current_qr_pixmap or self._current_qr_pixmap.isNull():
+            QMessageBox.warning(self, '无二维码', '请先检测一张卡片。')
+            return
+        default_name = f'{self._current_qr_uid or "qr"}.png'
+        target, _ = QFileDialog.getSaveFileName(
+            self, '保存二维码', default_name, 'PNG 图片 (*.png)',
+        )
+        if not target:
+            return
+        if self._current_qr_pixmap.save(target, 'PNG'):
+            QMessageBox.information(self, '已保存', f'二维码已保存到：\n{target}')
+        else:
+            QMessageBox.critical(self, '保存失败', '无法写入该位置，请换个目录。')
+
+    def handle_qr_print(self):
+        """打印当前二维码。"""
+        if not self._current_qr_pixmap or self._current_qr_pixmap.isNull():
+            QMessageBox.warning(self, '无二维码', '请先检测一张卡片。')
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        dlg = QPrintDialog(printer, self)
+        if dlg.exec() != QPrintDialog.DialogCode.Accepted:
+            return
+        try:
+            painter = QPainter(printer)
+            page = printer.pageRect(QPrinter.Unit.DevicePixel)
+            scaled = self._current_qr_pixmap.scaled(
+                int(page.width()), int(page.height()),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = int((page.width() - scaled.width()) / 2)
+            y = int((page.height() - scaled.height()) / 2)
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+        except Exception as e:
+            QMessageBox.critical(self, '打印失败', str(e))

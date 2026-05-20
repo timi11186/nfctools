@@ -3,9 +3,11 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QDesktopServices
 from pathlib import Path
 from .api_client import APIClient
 from .nfc_reader import NFCReader
+from .qr_export import generate_card_qr, get_qr_dir, qr_available
 from datetime import datetime
 import time
 
@@ -76,20 +78,24 @@ class MainWindow(QMainWindow):
         self.refresh_button = QPushButton("刷新状态")
         self.manage_button = QPushButton("卡片管理")
         self.switch_order_button = QPushButton("切换工单")
+        self.qr_button = QPushButton("二维码文件夹")
         self.refresh_button.setToolTip("从服务器重新拉取工单状态、配额、下一张卡类型")
         self.manage_button.setToolTip("查询/取消已烧录的卡片（用于烧错卡后重烧）")
         self.switch_order_button.setToolTip("返回工单列表，选择其他工单")
+        self.qr_button.setToolTip("打开烧录卡二维码文件夹（每张卡一张，可打印贴卡）")
         self.start_button.clicked.connect(self.start_burning)
         self.stop_button.clicked.connect(self.stop_burning)
         self.refresh_button.clicked.connect(self.manual_refresh)
         self.manage_button.clicked.connect(self.open_card_manager)
         self.switch_order_button.clicked.connect(self.switch_order)
+        self.qr_button.clicked.connect(self.open_qr_folder)
         self.stop_button.setEnabled(False)
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.stop_button)
         button_layout.addWidget(self.refresh_button)
         button_layout.addWidget(self.manage_button)
         button_layout.addWidget(self.switch_order_button)
+        button_layout.addWidget(self.qr_button)
         
         operation_layout.addWidget(self.status_label)
         operation_layout.addLayout(button_layout)
@@ -228,6 +234,17 @@ class MainWindow(QMainWindow):
         # 关闭管理窗口后刷新工单状态（取消操作可能改变 bound_count）
         self.load_task()
 
+    def open_qr_folder(self):
+        """打开烧录卡二维码文件夹（每张烧好的卡一张二维码，可打印贴卡）。"""
+        if not qr_available():
+            QMessageBox.warning(
+                self, '二维码功能不可用',
+                '未安装 qrcode 依赖，无法生成二维码。\n\n'
+                '请在烧录工具环境执行：\n  pip install "qrcode[pil]"',
+            )
+            return
+        qr_dir = get_qr_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(qr_dir.resolve())))
 
     def update_device_status(self, status: str):
         """更新设备状态显示"""
@@ -339,6 +356,17 @@ class MainWindow(QMainWindow):
                 self.success_lcd.display(self.success_count)
                 self.success_sound.play()
                 status_text = f"烧录成功，用户ID: {user_id}" if user_id else "烧录成功，请移除卡片"
+                # 生成该卡的认领二维码（保存到 ./qrcodes/{uid}.png，供打印贴卡）
+                # 失败不影响烧录主流程，仅记日志。
+                if nfc_id:
+                    try:
+                        qr_path = generate_card_qr(nfc_id)
+                        if qr_path:
+                            status_text += "（二维码已生成）"
+                        elif not qr_available():
+                            print("[QR] 未安装 qrcode 依赖，跳过二维码生成")
+                    except Exception as e:
+                        print(f"[QR] 生成二维码异常: {e}")
                 self.status_label.setText(status_text)
             else:
                 # 物理失败 或 后端拒收 都算失败
