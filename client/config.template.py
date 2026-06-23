@@ -1,9 +1,8 @@
-# 服务器配置
+# 服务器配置模板：复制为 config.json（放项目根 / 可执行文件同级目录）后按需修改。
+# 产线默认连生产；如需连测试后端，把 host 改成测试地址即可。
 SERVER_CONFIG = {
-    "host": "http://your_server_ip:8000",  # 替换为实际的服务器地址
-    "api_version": "v1"
+    "host": "https://nurafamily.com",   # 后端地址（产线生产）
+    "api_prefix": "/factory/legacy"      # 工厂兼容接口前缀
 }
 
-def get_api_url(endpoint: str) -> str:
-    """获取完整的API URL"""
-    return f"{SERVER_CONFIG['host']}/api/{SERVER_CONFIG['api_version']}/{endpoint}" 
+# 注：API URL 由 api_client._url（host + api_prefix + path）统一构造，无需 get_api_url。

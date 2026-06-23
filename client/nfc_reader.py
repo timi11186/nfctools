@@ -7,6 +7,7 @@ import requests
 import uuid
 import string
 import random
+import secrets
 import hashlib
 
 class NFCReader(QThread):
@@ -199,28 +200,10 @@ class NFCReader(QThread):
             return ""
 
     def generate_user_id(self, length=16):
-        """生成随机用户ID，结合时间戳确保唯一性"""
-        # 当前时间戳
-        timestamp = str(int(time.time()))
-        
-        # 随机字符串
-        random_str = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(length-4))
-        
-        # 结合时间戳和随机字符创建种子
-        seed = timestamp + random_str
-        
-        # 使用MD5创建哈希值
-        hash_obj = hashlib.md5(seed.encode())
-        hash_digest = hash_obj.hexdigest()
-        
-        # 取哈希值的前4位与随机字符组合
-        unique_id = random_str + hash_digest[:4]
-        
-        # 确保长度符合要求
-        if len(unique_id) > length:
-            unique_id = unique_id[:length]
-            
-        return unique_id.upper()
+        """生成随机用户ID。用 CSPRNG（secrets）而非 random+MD5——后者可预测，
+        不适合作为长期识别码（BUG-025）。length 位大写字母+数字，36^16 空间唯一性足够。"""
+        alphabet = string.ascii_uppercase + string.digits
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
         
     def get_nfc_id(self, connection) -> Optional[str]:
         """尝试获取NFC卡的唯一ID"""

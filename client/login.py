@@ -38,7 +38,7 @@ class LoginWindow(QWidget):
         password_layout.addWidget(self.password_input)
         
         # 记住账号密码选项
-        self.remember_checkbox = QCheckBox('记住账号密码')
+        self.remember_checkbox = QCheckBox('记住账号')
         
         # 登录按钮
         self.login_button = QPushButton('登录')
@@ -62,8 +62,8 @@ class LoginWindow(QWidget):
                     # 兼容旧字段名 remember_username
                     if data.get('remember_credentials') or data.get('remember_username'):
                         self.username_input.setText(data.get('username', ''))
-                        self.password_input.setText(data.get('password', ''))
                         self.remember_checkbox.setChecked(True)
+                        # 安全：不再回填密码（BUG-020）；旧文件里的明文 password 会在下次保存时被覆盖清除
         except Exception as e:
             print(f"加载保存的账号失败: {e}")
 
@@ -76,7 +76,7 @@ class LoginWindow(QWidget):
             data = {
                 'remember_credentials': remember,
                 'username': self.username_input.text() if remember else '',
-                'password': self.password_input.text() if remember else '',
+                # 安全：不再保存明文密码（BUG-020）。密码每次手动输入。
             }
 
             with open(config_path, 'w') as f:

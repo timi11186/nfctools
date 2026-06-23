@@ -2,9 +2,10 @@ import json
 import os
 from pathlib import Path
 
-# 默认配置
+# 默认配置（产线工具默认连生产；开发/测试可在 config.json 覆盖 host）
 DEFAULT_CONFIG = {
-    'host': 'http://localhost:8000'
+    'host': 'https://nurafamily.com',
+    'api_prefix': '/factory/legacy',
 }
 
 # 配置文件路径
@@ -38,6 +39,5 @@ def save_config(config):
         print(f"保存配置失败: {e}")
         return False
 
-def get_api_url(endpoint: str) -> str:
-    """获取完整的API URL"""
-    return f"{SERVER_CONFIG['host']}/api/{SERVER_CONFIG['api_version']}/{endpoint}" 
+# 注：API URL 由 api_client._url（host + api_prefix + path）统一构造。
+# 旧的 get_api_url() 引用已废弃的 api_version（会 KeyError）、且无任何调用，已移除（BUG-022）。

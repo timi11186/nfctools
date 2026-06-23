@@ -286,10 +286,12 @@ class APIClient:
                     'queued_offline': queued, 'queued_for_retry': True}
 
         if response.status_code == 401:
-            print("未授权创建记录，转为离线模式")
-            queued = self._handle_offline_mode(record_data)
-            return {'ok': False, 'error': '未授权（请重新登录）', 'permanent': False,
-                    'queued_offline': queued, 'queued_for_retry': True}
+            # BUG-021: 401 是认证失效，**不进离线队列**——过期 token 重试仍 401，只会无限积压，
+            # 且物理卡已写、后端没记录，继续烧录会让卡与 DB 大面积不一致。返回 need_relogin，
+            # UI 应立即停止烧录、要求重新登录；重登后再同步旧队列。
+            print("[create_burning_record] 401 未授权：停止烧录，需重新登录")
+            return {'ok': False, 'error': '登录已过期，请重新登录后继续', 'permanent': False,
+                    'need_relogin': True, 'queued_offline': False, 'queued_for_retry': False}
 
         if response.status_code != 200:
             print(f"创建记录失败: {response.status_code} {response.text}")

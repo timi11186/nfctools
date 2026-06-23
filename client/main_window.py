@@ -164,12 +164,6 @@ class MainWindow(QMainWindow):
         self.nfc_reader.start()
         
     def stop_burning(self):
-        # 打印调用栈，看是谁触发的 stop_burning
-        import traceback
-        print("=" * 60)
-        print("[MAIN] stop_burning() 被调用，调用栈：")
-        traceback.print_stack()
-        print("=" * 60)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status_label.setText("已停止")
@@ -318,6 +312,18 @@ class MainWindow(QMainWindow):
             backend_permanent = bool(api_result and api_result.get('permanent'))
 
             effective_success = success and backend_ok
+
+            # BUG-021: 401 认证失效 → 立即停止烧录、要求重新登录（本条不进离线队列，避免过期 token 下继续写卡积压）
+            if api_result and api_result.get('need_relogin'):
+                self.stop_burning()
+                QMessageBox.warning(
+                    self,
+                    "登录已过期，已停止烧录",
+                    f"物理 NFC 已写入：{nfc_id}\n用户ID：{user_id}\n\n"
+                    f"但登录已过期、本条未入库，已停止烧录。\n"
+                    f"请重新登录后，用『重烧』补录这张卡再继续。",
+                )
+                return
 
             # 永久错误：物理卡已写但 DB 没记录 —— 弹明显警告，提示用户处理
             if success and not backend_ok and backend_permanent:
