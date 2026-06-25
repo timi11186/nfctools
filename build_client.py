@@ -3,6 +3,8 @@
 NFC 烧录工具打包脚本（跨平台）
 
 用法：
+    # 先装可复现的运行时依赖（BUG-050，验证环境 Python 3.14.x）：
+    python -m pip install -r requirements.lock
     python build_client.py            # 用 config.json 现有的 host 打包
     python build_client.py --host=https://nurafamily.com  # 指定 host
 
@@ -40,12 +42,25 @@ DEFAULT_HOST = "https://nurafamily.com"
 DEFAULT_API_PREFIX = "/factory/legacy"
 
 
+PYINSTALLER_PINNED = "6.19.0"
+
+
 def ensure_pyinstaller():
+    # BUG-050: 钉 PyInstaller 到已验证版本，保证产线/CI 打包结果可复现。
+    # 运行时依赖请先 `pip install -r requirements.lock`（见 requirements.lock）。
+    # 关键：不能只判「能 import」就跳过——产线若已装了别的版本（如 6.18.0/6.20.x），
+    # 必须纠正到验证版本，否则仍用非验证版本打包。
     try:
         import PyInstaller  # noqa: F401
+        current = getattr(PyInstaller, "__version__", "unknown")
+        if current == PYINSTALLER_PINNED:
+            return
+        print(f"→ PyInstaller 版本 {current} != 验证版本 {PYINSTALLER_PINNED}，重装到验证版本...")
     except ImportError:
-        print("→ 安装 PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller>=6.0"])
+        print(f"→ 安装 PyInstaller=={PYINSTALLER_PINNED}...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", f"pyinstaller=={PYINSTALLER_PINNED}"]
+    )
 
 
 def write_config(host: str):

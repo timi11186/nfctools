@@ -1,0 +1,29 @@
+# NFC 烧录工具 — 运行时依赖锁文件（BUG-050）
+#
+# 用途：可复现安装。产线/CI/开发机统一用本文件，保证打进 app 的运行时依赖版本一致。
+#   python -m pip install -r requirements.lock
+#
+# 验证环境：Python 3.14.2（venv）。生成方式：在已验证可用的 venv 里 `pip freeze` 后，
+#   仅保留「运行时依赖」（会被 PyInstaller 打进 app 的包）；PyInstaller 等 OS 特定的构建
+#   工具版本固定在 build_client.py，不在此锁（不同平台 PyInstaller 传递依赖不同）。
+#
+# 直接依赖（含传递依赖）全部钉到精确版本：
+
+# GUI 框架
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.0
+PyQt6_sip==13.11.1
+
+# HTTP 客户端（requests + 其传递依赖）
+requests==2.33.1
+certifi==2026.2.25
+charset-normalizer==3.4.7
+idna==3.11
+urllib3==2.6.3
+
+# NFC 读卡器
+pyscard==2.3.1
+
+# 二维码生成 + Pillow
+qrcode==8.2
+pillow==12.2.0

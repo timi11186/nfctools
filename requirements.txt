@@ -1,14 +1,18 @@
-# NFC 烧录工具 - Python 依赖
+# NFC 烧录工具 - Python 直接依赖
 # 已完全对接 Nurplay 后端（https://nurafamily.com）
+#
+# BUG-050: 可复现构建请用锁文件 —— `python -m pip install -r requirements.lock`
+#   本文件是「直接依赖」清单（钉到已验证版本）；requirements.lock 含全部传递依赖的精确 pin。
+#   验证环境：Python 3.14.x。
 
 # GUI 框架
-PyQt6>=6.5.0
+PyQt6==6.11.0
 
 # HTTP 客户端
-requests>=2.31.0
+requests==2.33.1
 
 # NFC 读卡器（ACR122U 等）
-pyscard>=2.0.7
+pyscard==2.3.1
 
 # 烧录卡二维码生成（含 Pillow）
-qrcode[pil]>=7.4.2
+qrcode[pil]==8.2

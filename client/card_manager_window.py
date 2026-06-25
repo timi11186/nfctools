@@ -341,7 +341,9 @@ class CardManagerWindow(QDialog):
             f'⚠️ 这是硬删除操作：\n'
             f'• 后端记录将被删除\n'
             f'• 对应工单的已烧录数量 -1\n'
-            f'• 物理卡不受影响，可重新烧录',
+            f'• 物理卡仍写着旧 URL，但后端将无记录\n'
+            f'  → 取消后必须立即重新烧录覆盖，或物理报废；\n'
+            f'    不要当可用卡发出（用户刷卡会 404）',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -353,10 +355,14 @@ class CardManagerWindow(QDialog):
         result = self.api_client.cancel_nfc_card(uid, order_id=self.current_order_id)
         if result.get('success'):
             self._log(f'✓ 取消成功，已回滚工单 #{result.get("decremented_order_id")} 的计数')
-            QMessageBox.information(
-                self, '取消成功',
-                f'UID {uid} 的烧录记录已删除。\n\n'
-                f'这张物理卡现在可以重新放到读卡器上烧录。'
+            QMessageBox.warning(
+                self, '取消成功 — 请立即处理物理卡',
+                f'UID {uid} 的后端烧录记录已删除。\n\n'
+                f'⚠️ 这张物理卡仍写着旧 URL，但后端已无对应记录，现在是「野卡」。\n\n'
+                f'请立即二选一：\n'
+                f'• 把它重新放到读卡器上烧录（覆盖旧 URL）；\n'
+                f'• 或物理报废。\n\n'
+                f'不要直接当可用卡发出 —— 用户刷它会进入 404/未注册。'
             )
             self.handle_query()  # 刷新显示
         else:

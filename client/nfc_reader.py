@@ -311,6 +311,15 @@ class NFCReader(QThread):
                 0x04,  # URL Prefix: "https://"
             ] + url_bytes + [0xFE]  # 添加结束标记
 
+            # BUG-023: 写卡前校验容量。NTAG213 用户区 = page 4-39 共 36 页 × 4 字节 = 144 字节。
+            # 超出会写到 page 40+ 的锁定/配置页，可能部分写入或损卡，故直接拒绝（此时尚未清卡）。
+            NTAG213_USER_BYTES = 144
+            if len(ndef_data) > NTAG213_USER_BYTES:
+                self.status_changed.emit(
+                    f"URL 过长：NDEF {len(ndef_data)} 字节 > NTAG213 容量 {NTAG213_USER_BYTES} 字节，已拒绝写入"
+                )
+                return False
+
             # 先清空卡片
             self.status_changed.emit("正在清空卡片...")
             empty_page = [0x00] * 4
@@ -370,6 +379,20 @@ class NFCReader(QThread):
 
     def write_fm08(self, connection) -> bool:
         try:
+            # BUG-023: 写卡前先校验 URL 容量（必须在改任何扇区/密钥之前，否则容量不足时会留下
+            # 半改的卡）。FM08 URL 写在扇区1的 block 4/5/6：block4 容 9 字节、block5 容 16、
+            # block6 容 15（预留 1 字节 0xFE 结束符），合计 40 字节。
+            _fm_url = self.current_url or ""
+            if _fm_url.startswith("https://"):
+                _fm_url = _fm_url[8:]
+            _fm_url_bytes = list(_fm_url.encode('utf-8'))
+            FM08_URL_MAX = 40
+            if len(_fm_url_bytes) > FM08_URL_MAX:
+                self.status_changed.emit(
+                    f"URL 过长：{len(_fm_url_bytes)} 字节 > FM08 容量 {FM08_URL_MAX} 字节，已拒绝写入"
+                )
+                return False
+
             # 使用默认密钥
             DEFAULT_KEY = [0xFF] * 6
             
@@ -458,8 +481,8 @@ class NFCReader(QThread):
                     remaining = url_bytes[9:25]  # 最多16个字节
                     block_data = remaining + [0x00] * (16 - len(remaining))
                 elif block == 6 and len(url_bytes) > 25:
-                    # Block 6: URL结尾部分 + 结束标记
-                    remaining = url_bytes[25:]
+                    # Block 6: URL结尾部分 + 结束标记（BUG-023: 切到 40 字节封顶，预留 0xFE，防越界）
+                    remaining = url_bytes[25:40]
                     block_data = remaining + [0xFE] + [0x00] * (16 - len(remaining) - 1)
                 else:
                     block_data = [0x00] * 16
