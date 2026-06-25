@@ -366,8 +366,10 @@ class APIClient:
 
     def cancel_nfc_card(self, nfc_uid: str, order_id: Optional[int] = None) -> Dict:
         """
-        取消某张 NFC 卡的烧录（硬删除后端记录 + 递减工单 bound_count）。
-        物理卡未来可以重新烧录（走正常流程写入新记录）。
+        取消某张 NFC 卡的烧录（BUG-024: 后端软删，把记录标记为 status='revoked' + 递减工单 bound_count）。
+        不是硬删除：流出的旧 URL 卡刷卡会得到 403 CARD_REVOKED（明确「已作废」）而非 404。
+        同一张物理卡可重新烧录，会自动复活为 active 并重新计数（+1，与取消的 -1 对齐）。
+        已作废的卡不能重复取消（后端 409）。
 
         参数:
           nfc_uid: 必填
@@ -377,7 +379,7 @@ class APIClient:
           {
             "success": True,
             "nfc_uid": "...",
-            "deleted": True,
+            "revoked": True,
             "decremented_order_id": 123 | None
           }
         """

@@ -338,12 +338,11 @@ class CardManagerWindow(QDialog):
             f'确定要取消这张卡的烧录记录吗？\n\n'
             f'UID: {uid}\n'
             f'类型: {CARD_TYPE_LABEL.get(card_type, card_type)}\n\n'
-            f'⚠️ 这是硬删除操作：\n'
-            f'• 后端记录将被删除\n'
-            f'• 对应工单的已烧录数量 -1\n'
-            f'• 物理卡仍写着旧 URL，但后端将无记录\n'
-            f'  → 取消后必须立即重新烧录覆盖，或物理报废；\n'
-            f'    不要当可用卡发出（用户刷卡会 404）',
+            f'⚠️ 取消操作：\n'
+            f'• 后端把该卡标记为「已作废」(revoked)，并 -1 对应工单已烧录数\n'
+            f'• 物理卡仍写着旧 URL：刷它会得到「已作废」提示（不是 404）\n'
+            f'  → 取消后建议立即重新烧录覆盖（自动复活为可用），或物理报废；\n'
+            f'    不要当可用卡发出',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -357,12 +356,12 @@ class CardManagerWindow(QDialog):
             self._log(f'✓ 取消成功，已回滚工单 #{result.get("decremented_order_id")} 的计数')
             QMessageBox.warning(
                 self, '取消成功 — 请立即处理物理卡',
-                f'UID {uid} 的后端烧录记录已删除。\n\n'
-                f'⚠️ 这张物理卡仍写着旧 URL，但后端已无对应记录，现在是「野卡」。\n\n'
-                f'请立即二选一：\n'
-                f'• 把它重新放到读卡器上烧录（覆盖旧 URL）；\n'
+                f'UID {uid} 已在后端标记为「已作废」(revoked)。\n\n'
+                f'⚠️ 这张物理卡仍写着旧 URL。刷它会得到「已作废」提示（不再是 404）。\n\n'
+                f'请处理这张物理卡，二选一：\n'
+                f'• 重新放到读卡器上烧录（覆盖旧 URL，会自动复活为可用）；\n'
                 f'• 或物理报废。\n\n'
-                f'不要直接当可用卡发出 —— 用户刷它会进入 404/未注册。'
+                f'不要直接当可用卡发出。'
             )
             self.handle_query()  # 刷新显示
         else:
